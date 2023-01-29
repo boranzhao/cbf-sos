@@ -447,3 +447,49 @@ if print_file
     savefig([fig_name '.fig']);
     print([fig_name '.pdf'], '-painters', '-dpdf', '-r150');
 end
+
+%% refine the CBF function by increasing the constant 1 to c(>=1) (not needed)
+% maximize c in h = c-zx'*X^-1*zx such that {x|h>=0} is in C
+% x = x_store;
+% Xnew = X_fcn(x);
+% c= sdpvar; v = sdpvar(n,1);
+% exp6 = {}; L6 ={};
+% paras2 = [];
+% constrs2 = [];
+% 
+% for i =1:size(cx,1)
+%     Phi= Xnew-0.1*Xnew*cx(i,:)'*cx(i,:)*Xnew;
+%     [L6{i},c_L6,~] = polynomial([x;v],2);
+%     exp6{i} = v'*Phi*v - L6{i}*h0_x;  
+%     constrs2 = [constrs2 sos(exp6{i}) sos(L6{i}) c<=10];
+%     paras2 = [paras2; c_L6];
+% end
+% [sol2,v,Q,res] = solvesos(constrs2,-c,ops,paras2);
+% max_residual = max(res)
+% disp(sol2.info);
+% if sol2.problem ==0 || sol2.problem == 4 
+%    % ------------------------- extract X_fcn  ------------------------
+%     c = value(c)
+%     h_init_fcn = @(x) c- x'/X_fcn(x)*x;
+% end
+
+
+%% for plot (backup)
+% step=.1;
+% x1= -2:step:2;
+% x2= -2:step/2:2;
+% %z=-10:step:10;
+% %generate a grid with all triplets (x,y,z)
+% [xx1,xx2] = meshgrid(x1,x2);
+% %intersection of inequalities in a logical matrix
+% % I = (xx1.*xx1 + xx2.*xx2 < 1);
+% I = false(size(xx1));
+% for i = 1:size(xx1,1)
+%     for j=1:size(xx1,2)
+%         x0 = [xx1(i,j);xx2(i,j)];
+%         I(i,j) = h_init_fcn(x0)>=0;
+%     end
+% end
+%plot of the points (x1,x2) that verify all inequalities
+% scatter(xx1(I),xx2(I),'.');
+% xlim([-2 2]);

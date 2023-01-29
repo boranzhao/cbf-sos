@@ -1,15 +1,16 @@
 %% synthesis of CBF using SOS and linear-like form
 clear;
 yalmip('clear')
+%%
+save_file = 0;
+print_file = 0;
 % dynamics
-% an unstable linear system 
-% from  Clark, A., 2021, Verification and synthesis of control barrier
-% functions, CDC
+% an unstable linear system from  
+% Clark, 2021, Verification and synthesis of control barrier functions, CDC
 A = [1 0; -1 4]; B=[1;0];
 % % Wang, L., Han, D. and Egerstedt, M., 2018, Permissive barrier
 % % certificates for safe stabilization using sum-of-squares. ACC
 % A = [0  1;-1 0]; B = [0 1];
-% x = sdpvar(2,1);
 n = size(A,1); nu = size(B,2);
 x = sdpvar(n,1); 
 x_store = x; % for later use
@@ -18,7 +19,7 @@ x_store = x; % for later use
 fx = A*x; 
 dynamics = @(t,x,u) A*x+B*u;
 
-include_input_limits = 1;
+include_input_limits = 0;   % whether to include input limits
 
 % given a fixed point, rewrite the dynamics using the deviation states in linear-like form:
 % fixed point
@@ -32,26 +33,36 @@ M = eye(n);
 
 % settings
 deg_X = 0;
-deg_Y = 4;
-X_states_index = 2;
+deg_Y = 2;
+X_states_index = 2;  % the index of states which the matrix X can depend on
 
-% state constraints |cx*Zx}|<1; a set C:={x||cx*Zx}|<1};
+% state constraints |cx*Zx}|<1; note that  = x for this example;
+% a set C:={x||cx*zx}|<1}; 
 cx = x';
-gx = x'*x-1; % a more general form to express safety constraints with gx<=0
-
+qx = x'*x-1; % an alternative way to express safety constraints: qx<=0
+qx_fcn = @(x,y) x^2+y^2-1;
 % input constraints |Au*u|<1;
 Au = 1;
 
-% specif a set D={x|h0(x)>=0} that contains the original safety set
-h0_x = 1-(x'*x);
+% specif a set D={x|h0(x)>=0} that contains the original safety set C 
+P0 = eye(n);
+% In fact, D only needs to contain the resulting C_h = {x|h(x)>=0}; as a
+% result, one can check the following one
+% P0 = eye(n)/X_coef(:,:,1); [V,D]=eig(P0); D(1,1) = 1*D(1,1);D(n,n) = 0.1*D(n,n); P0 = V*D*V';
+% plt_P0= fimplicit(@(x,y) 1-[x y]*(P0)*[x y]','b'); % check its shape;
+% P0 =[1.0836   -0.6789;
+%    -0.6789    6.5149];
+
+h0_x = 1-x'*P0*x;
+h0_fcn = @(x1,x2) 1- [x1 x2]*P0*[x1 x2]';
 
 %% formulate the constraitns
-Zx = x; Zx_store = Zx;
-Zx_fcn = @(x) x;
+zx = x; zx_store = zx;
+zx_fcn = @(x) x;
 
 plant.n = n; plant.nu = nu;
 plant.A = A; plant.B = B; plant.M = M;
-plant.x = x; plant.Zx = Zx;
+plant.x = x; plant.zx = zx;
 plant.h0_x = h0_x;
 plant.Au =Au; plant.cx = cx;
 
@@ -62,9 +73,11 @@ cbf_config.deg_Lu = 2;
 cbf_config.deg_Lx = 2;
 cbf_config.deg_L_X0 = 2;
 cbf_config.include_input_limits = include_input_limits;
-[h_fcn,h_fcn2,X_coef,Y_coef] = cbf_sos(plant,cbf_config)
+[h_init_fcn,h_init_fcn1,X_coef,Y_coef,X_fcn,Y_fcn] = cbf_sos(plant,cbf_config);
+return;
 %% 
-figure(1);clf;
+figure(1);clf;hold on;
+% old way (cumbersome)
 % step=.1;
 % x1= -2:step:2;
 % x2= -2:step/2:2;
@@ -75,17 +88,25 @@ figure(1);clf;
 % for i = 1:size(xx1,1)
 %     for j=1:size(xx1,2)
 %         x0 = [xx1(i,j);xx2(i,j)];
-%         I(i,j) = h_fcn(x0)>=0;
+%         I(i,j) = h_init_fcn(x0)>=0;
 %     end
 % end
-ellipse(1,1,0,0,0,'r');hold on;
-fimplicit(h_fcn2)
+% ellipse(1,1,0,0,0,'r');hold on;
 %plot of the points (x1,x2) that verify all inequalities
 % scatter(xx1(I),xx2(I),'.');
-xlim([-2 2]);
-axis equal
+% xlim([-2 2]);
+% axis equal
 
+% new way
+fimplicit(qx_fcn,'r-','Linewidth',1); fimplicit(h0_fcn,'r--','Linewidth',1); 
+plt_hinit = fimplicit(h_init_fcn1,'b--','Linewidth',1.5);
+
+if save_file 
+    file_name = ['exp1_ulim_' num2str(include_input_limits) '_degX_' num2str(deg_X) '_degY_' num2str(deg_Y) '.mat'];    
+    save(file_name,'plant','cbf_config','h_init_fcn','h_init_fcn1','X_fcn','Y_fcn','X_coef','Y_coef');
+end
 return;
+
 %% iteratively improve h(x)
 clear v v1 L_X Lcbf Lu Lx L_X0
 clear exp1 exp2 exp3 exp4 exp5
@@ -98,26 +119,27 @@ end
 % get initial hx;
 P0 = eye(n)/X_coef(:,:,1);
 K0 = Y_coef(:,:,1)*P0;
-u_fcn0 = @(x) K0*Zx_fcn(x);
-hx = 1-Zx_store'*P0*Zx_store; 
+u_fcn0 = @(x) K0*zx_fcn(x);
+hx = 1-zx_store'*P0*zx_store; 
 
 max_iter = 50;
 tol = 1e-3;
+deg_ux_refine = 4; deg_yx_4_hx_refine = 2;
 min_eig_Qhs = nan*ones(1,max_iter);
 epsilons = nan*ones(1,max_iter);
 for k = 1:max_iter
-    %% With h(x) and alpha fixed, search for u(x), Lcbf(x), and Lu_j(x)
+    %% With h(x) and alpha() fixed, search for u(x), Lcbf(x), and Lu_j(x)
     ops = sdpsettings('solver','mosek','sos.numblkdg',1e-6,'verbose',0); %, ,'sos.numblkdg',1e-7 sometimes this will cause infinite loop
     x = x_store; 
 %     alpha = sdpvar; constrs =[alpha>=0 alpha<=1e2]; paras=[alpha];
     alpha = 1;  constrs =[]; paras=[];
     dh_dx = jacobian(hx,x);
     epsilon = sdpvar;
-    [ux,c_u,v_u] = polynomial(x,4); % maximum: 4  best value: 4 (w/o input limits) and 
+    [ux,c_u,v_u] = polynomial(x,deg_ux_refine); % maximum: 4  best value: 4 (w/o input limits) and 
 
-    % (1) cbf condition
+    % (1) cbf condition: h_dot +alpha(hx)-epsilon >= 0
     [Lcbf,c_Lcbf,v_Lcbf] = polynomial(x,2);
-    exp1 = dh_dx*(fx+Bx*ux)+alpha*hx-Lcbf*hx-epsilon;
+    exp1 = dh_dx*(fx+B*ux)+alpha*hx-Lcbf*hx-epsilon;
     constrs = [constrs;sos(exp1) sos(Lcbf)];
     paras = [paras;epsilon;c_u; c_Lcbf];
 
@@ -157,19 +179,19 @@ for k = 1:max_iter
 
     %% With  u(x), Lcbf(x), and Lu_j(x) fixed, search for h(x)
     alpha = value(alpha);
-    clear Zx
+%     clear yx
     constrs =[]; paras=[];
-    Zx = monolist(x,2); % best value: 2 (w/o input limits) and 
-    n_Zx = length(Zx);
-    Qh = sdpvar(n_Zx);
-    hx = Zx'*Qh*Zx;
+    yx = monolist(x, deg_yx_4_hx_refine); 
+    n_yx = length(yx);
+    Qh = sdpvar(n_yx);
+    hx = yx'*Qh*yx;
     mu = sdpvar;
     dh_dx = jacobian(hx,x);
     paras = [Qh(:);mu];
     ops = sdpsettings('solver','mosek','sos.numblkdg',1e-6,'verbose',0); %, ,'sos.numblkdg',1e-9 sometimes this will cause infinite loop
     % (1) cbf condition
-    exp1 = dh_dx*(fx+Bx*ux)+alpha*hx-Lcbf*hx;
-    constrs = [Qh(1,1)>=1;Qh>=mu*eye(n_Zx);sos(exp1)];
+    exp1 = dh_dx*(fx+B*ux)+alpha*hx-Lcbf*hx;
+    constrs = [Qh(1,1)>=1;Qh>=mu*eye(n_yx);sos(exp1)];
 
     % (2) control limits: |Au*u|<=1;
     if include_input_limits 
@@ -181,28 +203,28 @@ for k = 1:max_iter
         end
     end
 
-    % (3) state constraints: 
-    for i =1:size(gx,1) 
+%     (3) state constraints: ensuring that Ch={x|h(x)<=0} is a subset of
+%     C{x|qx<0}, where qx = |cx*zx|-1; in other words, the complement of C
+%     is a subset of Ch. 
+    for i =1:size(qx,1) 
         [Lx{i},c_Lx,v_Lx] = polynomial(x,4);
-        exp2{i} = -hx-Lx{i}*gx(i);
+        exp2{i} = -hx-Lx{i}*qx(i);  % whenever qx(i)>0 (unsafe), we want h(x)<0 (outside CBF certified region)
         constrs = [constrs sos(exp2{i}) sos(Lx{i})];
         paras = [paras; c_Lx];
     end
 
-
-    obj = -trace(Qh); % could be unbounded because Qh can be scaled 
+    %obj = -trace(Qh); % not a good choice (could be unbounded because Qh
+    %can be scaled)
     obj = -mu;
-    % % obj = [];
     [sol,~,Q,res] = solvesos(constrs,obj,ops,paras);
     max_residual =  max(res);
     fprintf(1,'max_residual for searching hx: %.4e\n', max_residual);
     disp(sol.info)
     if sol.problem ==0 || sol.problem == 4 
         Qh0 = value(Qh);
-%         trace_Qh = trace(Qh);
-       
     end
-    hx = Zx'*Qh0*Zx;  % Qh0 may be from last iteration when the iteration is failed
+    hx = yx'*Qh0*yx;  % Qh0 may be from last iteration when the iteration is failed
+    dh_dx = jacobian(hx,x);
     min_eig_Qhs(k) = min(eig(value(Qh)));
     fprintf(1,'Minimum eigenvalue of Qh: %5.2f\n',min_eig_Qhs(k))
     if max_residual > 1e-3 ||  sol.problem ~=0 
@@ -218,50 +240,69 @@ for k = 1:max_iter
     end
 end
 min_eig_Qhs = min_eig_Qhs(~isnan(min_eig_Qhs))
+cbf_config.alpha = alpha;
+cbf_config.deg_ux_refine = deg_ux_refine;
+cbf_config.deg_yx_4_hx_refine = deg_yx_4_hx_refine;
 
-%% get u(x) and h(x) expressions
+%% get the expressions of u(x) and h(x) 
 XX = x_store; % so that the result from "sdisplay" command uses "XX"
 hx = clean(hx, 1e-10);
 ux = clean(ux, 1e-10);
 s_u = sdisplay(ux);
 s_h = sdisplay(hx);
+s_dh = sdisplay(dh_dx);
 syms XX [n 1]
 syms u_fcn [nu 1]
 syms h_fcn [1 1]
+syms dh_dx_fcn [1 n];
 for i=1:nu
     u_fcn(i,1) = eval(s_u{i});
 end
 h_fcn = eval(s_h{1});
+for i=1:n
+    dh_dx_fcn(i) = eval(s_dh{i}); 
+end
+
 % matlabFunction(u_fcn,'File','u_fcn1','Vars',{XX});
 u_fcn = matlabFunction(u_fcn,'Vars',{XX});
 h_fcn = matlabFunction(h_fcn,'Vars',{XX});
-h_fcn2 = @(x1,x2) h_fcn([x1;x2]);
-
+h_fcn1 = @(x1,x2) h_fcn([x1;x2]);
+dh_dx_fcn = matlabFunction(dh_dx_fcn,'Vars',{XX});
+% result from Clark 2022 paper
+h_fcn_existing = @(x1,x2) 1.1575-[x1-0.1378 x2]*[6.23 -26.7; -26.7 146.7]*[x1-0.1378 x2]';
+if save_file 
+    file_name = ['exp1_ulim_' num2str(include_input_limits) '_degY_' num2str(deg_Y) '_deg_ux_refine_' num2str(deg_ux_refine) '.mat'];    
+    save(file_name,'plant','cbf_config','h_init_fcn','h_init_fcn1',...
+        'h_fcn','h_fcn1','u_fcn','dh_dx_fcn','Qh0','X_fcn','Y_fcn','min_eig_Qhs');
+end
+	
 % plot
 figure(1);
-% step=.1;
-% x1= -2:step:2;
-% x2= -2:step/2:2;
-% %z=-10:step:10;
-% %generate a grid with all triplets (x,y,z)
-% [xx1,xx2] = meshgrid(x1,x2);
-% %intersection of inequalities in a logical matrix
-% % I = (xx1.*xx1 + xx2.*xx2 < 1);
-% I = false(size(xx1));
-% for i = 1:size(xx1,1)
-%     for j=1:size(xx1,2)
-%         x0 = [xx1(i,j);xx2(i,j)];
-%         I(i,j) = h_fcn(x0)>=0;
-%     end
-% end
-
 % ellipse(1,1,0,0,0,'r');hold on;
-fimplicit(h_fcn2,'c')
+plt_h = fimplicit(h_fcn1,'g','Linewidth',1.5);
 %plot of the points (x1,x2) that verify all inequalities
 % scatter(xx1(I),xx2(I),'.');
-xlim([-2 2]);
+% xlim([-2 2]);
+plt_hinit = fimplicit(h_init_fcn1,'b--','Linewidth',1.5);
+if include_input_limits == 0
+    plt_h_existing = fimplicit(h_fcn_existing,'m','Linewidth',1.5);
+    legend([plt_hinit plt_h plt_h_existing],{'$h^\textrm{init}(x)=0$','$h(x)=0$','$h(x)=0$ from [Clark 21]'},'interpreter','latex','numcolumns',2); %'Orientation','Horizontal'
+else
+    legend([plt_hinit plt_h],{'$h^\textrm{init}(x)=0$','$h(x)=0$'},'interpreter','latex','Orientation','Horizontal'); %'Orientation','Horizontal'
+end
+% axis equal
 axis equal
-legend({'g(x)=0','h(x)=0','h_{ref}(x)=0'},'interpreter','latex');
+xlim([-1.1 1.1]);
+ylim([-1.3 1.3]);
+xlabel('$x_1$','interpreter','latex');ylabel('$x_2$','interpreter','latex');
+% legend({'$q(x)=0$','$h^\textrm{init}(x)=0$','$h(x)=0$' '$h(x)=0$ from [Clark 21]'},'interpreter','latex','Orientation','Horizontal');
+
+goodplot([5 6]);
+fig_name = ['exp1_ulim_' num2str(include_input_limits) '_cbf'];
+if print_file 
+    savefig([fig_name '.fig']);
+    print([fig_name '.pdf'], '-painters', '-dpdf', '-r150');
+end		 
 
 %% simulate a trajectory
 x0 = [-0.6;-0.15];
@@ -284,7 +325,7 @@ for i=1:T_steps
     t = t_vec(i);   
 
     % get the nominal state and input
-    u = ustar + Y_fcn(x)/X_fcn(x)*Zx_fcn(x);
+    u = ustar + Y_fcn(x)/X_fcn(x)*zx_fcn(x);
     % record
     uTraj(:,i) = u;        
     % propagate with zero-hold for control inputs
@@ -309,28 +350,4 @@ subplot(2,1,2);
 plot(t_vec(1:end-1),uTraj);
 ylabel('u')
 
-%% refine the CBF function by increasing the constant 1 to c(>=1) (not needed)
-% maximize c in h = c-Zx'*X^-1*Zx such that {x|h>=0} is in C
-% x = x_store;
-% Xnew = X_fcn(x);
-% c= sdpvar; v = sdpvar(n,1);
-% exp6 = {}; L6 ={};
-% paras2 = [];
-% constrs2 = [];
-% 
-% for i =1:size(cx,1)
-%     Phi= Xnew-0.1*Xnew*cx(i,:)'*cx(i,:)*Xnew;
-%     [L6{i},c_L6,~] = polynomial([x;v],2);
-%     exp6{i} = v'*Phi*v - L6{i}*h0_x;  
-%     constrs2 = [constrs2 sos(exp6{i}) sos(L6{i}) c<=10];
-%     paras2 = [paras2; c_L6];
-% end
-% [sol2,v,Q,res] = solvesos(constrs2,-c,ops,paras2);
-% max_residual = max(res)
-% disp(sol2.info);
-% if sol2.problem ==0 || sol2.problem == 4 
-%    % ------------------------- extract X_fcn  ------------------------
-%     c = value(c)
-%     h_fcn = @(x) c- x'/X_fcn(x)*x;
-% end
 

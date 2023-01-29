@@ -1,7 +1,8 @@
 function [h_fcn,h_fcn1,X_coef,Y_coef,X_fcn,Y_fcn] = cbf_sos(plant,cbf_config)
+% extracting parameters
 n= plant.n; nu = plant.nu;
 A = plant.A; B = plant.B; M = plant.M;
-x = plant.x; Zx = plant.Zx;
+x = plant.x; zx = plant.zx;
 h0_x = plant.h0_x;
 Au = plant.Au; cx = plant.cx;
 
@@ -48,10 +49,12 @@ constrs = [];
 % constrs = [sos(exp1); sos(L_X)];
 % paras = [paras; c_L_X];
 
-% (1): \dot h >=0 in D
+% (1): \dot h >=0 in D:
+% Q: why not use \dot h + alpha*h >= 0?  A: when we use the linear-like
+% form, we can only impose \dot h>=0 to get tractable solutions. 
 X_dot = zeros(n);
 for j=1:length(X_states_index)
-    X_dot = X_dot + dX_dx{j}*(A(X_states_index(j),:)*Zx);    
+    X_dot = X_dot + dX_dx{j}*(A(X_states_index(j),:)*zx);    
 end
 tmp = M*(A*X+B*Y); 
 [Lcbf,c_Lcbf,v_Lcbf] = polynomial([x;v],deg_Lcbf); %%%%%%%%%%%%%%%%%%%%%% this may need to be changed
@@ -59,7 +62,7 @@ exp1 = v'*(X_dot-(tmp+tmp'))*v - Lcbf*h0_x;
 constrs = [constrs sos(Lcbf) sos(exp1)];
 paras = [paras; c_Lcbf];
 
-% (2): |Au*u_til|<=1;
+% (2): |Au*u_til|<=1 (input constraint)
 if cbf_config.include_input_limits 
     exp2 = {}; Lu ={};
     for j = 1:size(Au,1)    
@@ -71,7 +74,7 @@ if cbf_config.include_input_limits
     end
 end
 
-% (3): Ch = {x|h(x)>=0} is in C:={x||cx*Zx}|<1};
+% (3): Ch = {x|h(x)>=0} is a subset C:={x||cx*zx}|<1};
 exp3 = {}; Lx ={};
 for i =1:size(cx,1)
     Phi_i = [1 cx(i,:)*X; (cx(i,:)*X)' X];
@@ -83,15 +86,15 @@ end
 
 % (4): X >= X0; 
 X0 = sdpvar(n);
-[L_X0,c_L_X0,~] = polynomial([x;v],deg_L_X0);
-% obj = -logdet(X0);                        % for SDPT3: no need to inlcude X0>=0 since this automatically assumed when using logdet function, https://yalmip.github.io/command/logdet/     
-obj = -geomean(X0);                         % for other solvers
+[L_X0,c_L_X0,~] = polynomial([x;v],deg_L_X0);                        
 exp4 = v'*(X-X0)*v-L_X0*h0_x;
 % constrs = [constrs  sos(L_X0) X0<=1e-3*eye(n)];             % X0>=1e-6*eye(n)
-constrs = [constrs sos(exp4) sos(L_X0)];      % X0>=1e-6*eye(n)
+constrs = [constrs sos(exp4) sos(L_X0)];        % X0>=1e-6*eye(n)
 paras = [paras; c_L_X0];
+% obj = -logdet(X0);                            % for SDPT3: no need to inlcude X0>=0 since this automatically assumed when using logdet function, https://yalmip.github.io/command/logdet/     
+obj = -geomean(X0);                             % for other solvers such as sedumi, mosek, etc. 
 
-ops = sdpsettings('solver','mosek','sos.numblkdg',1e-6); %, ,'sos.numblkdg',1e-7 sometimes this will cause infinite loop
+ops = sdpsettings('solver','mosek','sos.numblkdg',1e-9); % sometimes need to change 'sos.numblkdg' to avoid an infinite loop
 [sol,v,Q,res] = solvesos(constrs,obj,ops,paras);
 max_residual = max(res)
 disp(sol.info);
@@ -108,7 +111,7 @@ if sol.problem ==0 || sol.problem == 4
     for i=1:length(polyY)
         Y_fcn = Y_fcn+ Y_coef(:,:,i)*polyY(i);
     end
-    X_fcn = clean(X_fcn, 1e-10);
+    X_fcn = clean(X_fcn, 1e-10);       
     Y_fcn = clean(Y_fcn, 1e-10);
     XX = plant.x; % so that the result from "sdisplay" command uses "XX"
     s = sdisplay(X_fcn);
@@ -121,7 +124,7 @@ if sol.problem ==0 || sol.problem == 4
             X_fcn(i,j) = eval(s{i,j});
         end
     end
-    matlabFunction(X_fcn,'File','X_fcn1','Vars',{XX});
+%     matlabFunction(X_fcn,'File','X_fcn1','Vars',{XX});
     X_fcn = matlabFunction(X_fcn,'Vars',{XX});
     
     for i=1:nu
@@ -129,7 +132,7 @@ if sol.problem ==0 || sol.problem == 4
             Y_fcn(i,j) = eval(s2{i,j});
         end
     end
-    matlabFunction(Y_fcn,'File','Y_fcn1','Vars',{XX});
+%     matlabFunction(Y_fcn,'File','Y_fcn1','Vars',{XX});
     Y_fcn = matlabFunction(Y_fcn,'Vars',{XX});
 end
 h_fcn = @(x) 1- x'/X_fcn(x)*x;
