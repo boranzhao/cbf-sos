@@ -1,9 +1,15 @@
 %% synthesis of CBF using SOS and linear-like form
 clear;
 yalmip('clear')
-%%
+%% settings
 save_file = 0; print_file=0;
-% dynamics from the following paper
+include_input_limits = 1;
+deg_X = 0; deg_Y = 2;
+X_state_index = 1;
+Y_state_index = [1 2 3];
+
+%% dynamics and constraints 
+% dynamics:  from the following paper
 % Wang, L., Han, D. and Egerstedt, M., 2018, Permissive barrier
 % certificates for safe stabilization using sum-of-squares. ACC
 n = 3; nu = 2;
@@ -17,13 +23,11 @@ zx = x; zx_store = zx;
 zx_fcn = @(x) x;
 x1=x(1); x2=x(2); x3=x(3);
 
-
-% a standard nonlinear form
+% written in a standard nonlinear input-affine form
 fx = [x(2)-x(3)^2;x(3)-x(1)^2;-x(1)-2*x(2)-x(3)+x(2)^3];
 f_fcn = @(x) [x(2)-x(3)^2;x(3)-x(1)^2;-x(1)-2*x(2)-x(3)+x(2)^3];
 dynamics = @(t,x,u) f_fcn(x)+[0;u(1);u(2)];
 
-include_input_limits = 1;
 % given a fixed point, rewrite the dynamics using the deviation states in linear-like form:
 % fixed point
 xstar = zeros(n,1);
@@ -33,11 +37,6 @@ ustar = zeros(nu,1);
 
 % x_store = x;
 M = eye(n); 
-
-% settings
-deg_X = 0;
-deg_Y = 2;
-X_states_index = 1;
 
 % state constraints |cx*zx}|<1; a set C:={x||cx*zx}|<1};
 cx = [-x1/8+4/8 -x2/8+2/8 -x3/8+4/8;
@@ -58,11 +57,13 @@ q1_fcn = matlabFunction(qx_fcn(1),'Vars',{x1,x2,x3});
 q2_fcn = matlabFunction(qx_fcn(2),'Vars',{x1,x2,x3});
 q3_fcn = matlabFunction(qx_fcn(3),'Vars',{x1,x2,x3});
 q4_fcn = matlabFunction(qx_fcn(4),'Vars',{x1,x2,x3});
-% input constraints |Au*u|<1;
-Au = [1 0;0 1];
+% input constraints |Du*u|<1;
+Du = [1 0;0 1];
 
 % specif a set D={x|h0(x)>=0} that contains the original safety set
-h0_x = 1-0.1*(x'*x);
+P0 = 10*eye(3);
+% h0_x = 1-0.1*(x'*x);
+h0_x = 1-zx'/P0*zx;
 
 %% visualization 
 figure(1);clf;
@@ -83,22 +84,24 @@ xlabel('x_1','interpreter','latex');ylabel('x_2','interpreter','latex');zlabel('
 plant.n = n; plant.nu = nu;
 plant.A = A; plant.B = B; plant.M = M;
 plant.x = x; plant.zx = zx;
-plant.h0_x = h0_x;
-plant.Au =Au; plant.cx = cx;
+plant.P0 = P0; plant.h0_x = h0_x;
+plant.Du =Du; plant.cx = cx;
 
 cbf_config.deg_X = deg_X; cbf_config.deg_Y = deg_Y;
-cbf_config.X_state_index = X_states_index;
+cbf_config.X_state_index = X_state_index;
+cbf_config.Y_state_index = Y_state_index;
 cbf_config.deg_Lcbf = 2; 
 cbf_config.deg_Lu = 2;
 cbf_config.deg_Lx = 2;
 cbf_config.deg_L_X0 = 2;
+cbf_config.deg_L_P0 = 2;
 cbf_config.include_input_limits = include_input_limits;
 cbf_config.q1_fcn = q1_fcn; cbf_config.q2_fcn = q2_fcn; 
 cbf_config.q3_fcn = q3_fcn; cbf_config.q4_fcn = q4_fcn; 
 [h_fcn_init,h_fcn_init1,X_coef,Y_coef,X_fcn,Y_fcn] = cbf_sos(plant,cbf_config)
-%% 
+%%  plotting
 figure(1);
-% old way
+% old way for plotting (cumbersome)
 % step=.1;
 % x1= -2:step:2;
 % x2= -2:step/2:2;
@@ -117,9 +120,7 @@ figure(1);
 % axis equal
 
 % new way
-plt_h = fimplicit3(h_fcn_init1,'facecolor',[0.3010 0.7450 0.9330],'MeshDensity',40); % close to blue [0 0.4470 0.7410]
-
-    
+plt_h = fimplicit3(h_fcn_init1,'facecolor',[0.3010 0.7450 0.9330],'MeshDensity',40); % close to blue [0 0.4470 0.7410] 
 if save_file 
     file_name = ['exp2_ulim_' num2str(include_input_limits) '_degX_' num2str(deg_X) '_degY_' num2str(deg_Y) '.mat'];    
     save(file_name,'plant','cbf_config','h_fcn_init','h_fcn_init1','X_fcn','Y_fcn');
@@ -133,12 +134,11 @@ x = x_store;
 v = sdpvar(2,1);
 
 if size(X_coef,3)> 1
-    error('A constant X matrix has to be enforced so that h(x) is a polynominal function of x');    
+    error('X needs to be a constant matrix so that h(x) is a polynominal function of x');    
 end
 % get initial hx;
 P0 = eye(n)/X_coef(:,:,1);
-K0 = Y_coef(:,:,1)*P0;
-u_fcn0 = @(x) K0*zx_fcn(x);
+u_fcn0 = @(x) Y_fcn(x)*(P0*zx_fcn(x));
 hx = 1-zx_store'*P0*zx_store; 
 
 max_iter = 50;
@@ -166,12 +166,12 @@ for k = 1:max_iter
     constrs = [constrs;sos(exp1) sos(Lcbf)];
     paras = [paras;epsilon;c_u; c_Lcbf];
 
-    % (2) control limits: |Au*u|<=1;
+    % (2) control limits: |Du*u|<=1;
     if include_input_limits 
         exp1 = {}; Lu ={}; c_Lu={}; v_Lu={};
-        for j = 1:size(Au,1)    
+        for j = 1:size(Du,1)    
             [Lu{j},c_Lu{j},v_Lu{j}] = polynomial([x;v],2);
-            exp1{j} = v'*[1  Au(j,:)*ux; (Au(j,:)*ux)' 1]*v - Lu{j}*hx;   
+            exp1{j} = v'*[1  Du(j,:)*ux; (Du(j,:)*ux)' 1]*v - Lu{j}*hx;   
             constrs = [constrs sos(exp1{j}) sos(Lu{j})];
             paras = [paras; c_Lu{j}];
         end
@@ -191,7 +191,7 @@ for k = 1:max_iter
         ux = [c_u1 c_u2]'*v_u;
         Lcbf = c_Lcbf'*v_Lcbf;
         if include_input_limits 
-            for j = 1:size(Au,1)  
+            for j = 1:size(Du,1)  
                 c_Lu{j} = value(c_Lu{j});
                 Lu{j} = c_Lu{j}'*v_Lu{j};
             end
@@ -215,12 +215,12 @@ for k = 1:max_iter
     exp1 = dh_dx*(fx+B*ux)+alpha*hx-Lcbf*hx;
     constrs = [Qh(1,1)>=1;Qh>=mu*eye(n_yxh);sos(exp1)];
 
-    % (2) control limits: |Au*u|<=1;
+    % (2) control limits: |Du*u|<=1;
     if include_input_limits 
         exp1 = {};
-        for j = 1:size(Au,1)    
-%             exp2{j} = 1-norm(Au(j,:)*ux,2)^2 - Lu{j}*hx;   
-            exp1{j} = v'*[1  Au(j,:)*ux; (Au(j,:)*ux)' 1]*v - Lu{j}*hx;   
+        for j = 1:size(Du,1)    
+%             exp2{j} = 1-norm(Du(j,:)*ux,2)^2 - Lu{j}*hx;   
+            exp1{j} = v'*[1  Du(j,:)*ux; (Du(j,:)*ux)' 1]*v - Lu{j}*hx;   
             constrs = [constrs sos(exp1{j})];
         end
     end
@@ -307,6 +307,7 @@ plt_h_existing= fimplicit3(h_existing,'m','FaceAlpha',0.2,'LineStyle',':','EdgeC
 % axis equal
 legend({'$q_1(x)=0$','$q_2(x)=0$','$q_3(x)=0$','$q_4(x)=0$','$h(x)=0$','$h^\textrm{ref}(x)=0$'},'interpreter','latex');
 
+xlim([-4 4]); ylim([-4 4]); zlim([-5 5])
 view(-148.67, -13.75);
 
 goodplot([6 8]);
@@ -347,7 +348,6 @@ for i = 1:size(xx1,1)
         end
     end
 end
-% x0 = [-1;3;-1]; 
 % x0 = [2;-1;0];
 figure(2);clf;hold on;
 plt_h_refine= fimplicit3(h_fcn1,'g','FaceAlpha',0.15,'LineStyle',':','EdgeColor','interp'); %'EdgeColor','interp'
@@ -390,7 +390,7 @@ for i = 1:size(x0s,2)
 %             end 
             
             % additionally add constraint            
-            [u,feval,exitflag,~] = quadprog(eye(nu),[0 0]',-phi1,phi0,[],[],-1./diag(Au),1./diag(Au),[],options); % options
+            [u,feval,exitflag,~] = quadprog(eye(nu),[0 0]',-phi1,phi0,[],[],-1./diag(Du),1./diag(Du),[],options); % options
         end
        
         % record
@@ -441,8 +441,9 @@ xlabel('Time (s)');
 legend([h_plt_u1 h_plt_u2],{'u_1','u_2'},'Orientation','Horizontal','interpreter','latex');
 goodplot([6 6]);
 fig_name = ['exp2_ulim_' num2str(include_input_limits) '_min_norm_', num2str(min_norm_control) '_trajs']; 
-goodplot([6 3]);
+goodplot([6 2]);
 % set(gca, 'box', 'off');
+grid on;ylim([-1.1 1.1])
 if print_file 
     savefig([fig_name '.fig']);
     print([fig_name '.pdf'], '-painters', '-dpdf', '-r150');

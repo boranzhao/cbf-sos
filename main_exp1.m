@@ -1,25 +1,27 @@
 %% synthesis of CBF using SOS and linear-like form
 clear;
 yalmip('clear')
-%%
+%% settings
 save_file = 0;
 print_file = 0;
-% dynamics
+include_input_limits = 0;   % whether to include input limits
+deg_X = 0;
+deg_Y = 2;
+X_states_index = 2;         % the index of states which X depends on
+Y_states_index = [1 2];     % the index of states which Y depends on
+
+%% dynamics and constraints
 % an unstable linear system from  
-% Clark, 2021, Verification and synthesis of control barrier functions, CDC
+% Clark, Verification and synthesis of control barrier functions, CDC, 2021
 A = [1 0; -1 4]; B=[1;0];
-% % Wang, L., Han, D. and Egerstedt, M., 2018, Permissive barrier
-% % certificates for safe stabilization using sum-of-squares. ACC
 % A = [0  1;-1 0]; B = [0 1];
 n = size(A,1); nu = size(B,2);
 x = sdpvar(n,1); 
 x_store = x; % for later use
 
-% a standard nonlinear formulation
+% written in a standard nonlinear input-affine form
 fx = A*x; 
 dynamics = @(t,x,u) A*x+B*u;
-
-include_input_limits = 0;   % whether to include input limits
 
 % given a fixed point, rewrite the dynamics using the deviation states in linear-like form:
 % fixed point
@@ -31,18 +33,13 @@ ustar = zeros(nu,1);
 % x_store = x;
 M = eye(n); 
 
-% settings
-deg_X = 0;
-deg_Y = 2;
-X_states_index = 2;  % the index of states which the matrix X can depend on
-
 % state constraints |cx*Zx}|<1; note that  = x for this example;
 % a set C:={x||cx*zx}|<1}; 
 cx = x';
 qx = x'*x-1; % an alternative way to express safety constraints: qx<=0
 qx_fcn = @(x,y) x^2+y^2-1;
-% input constraints |Au*u|<1;
-Au = 1;
+% input constraints |Du*u|<1;
+Du = 1;
 
 % specif a set D={x|h0(x)>=0} that contains the original safety set C 
 P0 = eye(n);
@@ -52,9 +49,8 @@ P0 = eye(n);
 % plt_P0= fimplicit(@(x,y) 1-[x y]*(P0)*[x y]','b'); % check its shape;
 % P0 =[1.0836   -0.6789;
 %    -0.6789    6.5149];
-
-h0_x = 1-x'*P0*x;
-h0_fcn = @(x1,x2) 1- [x1 x2]*P0*[x1 x2]';
+h0_x = 1-x'/P0*x;
+h0_fcn = @(x1,x2) 1- [x1 x2]/P0*[x1 x2]';
 
 %% formulate the constraitns
 zx = x; zx_store = zx;
@@ -63,21 +59,23 @@ zx_fcn = @(x) x;
 plant.n = n; plant.nu = nu;
 plant.A = A; plant.B = B; plant.M = M;
 plant.x = x; plant.zx = zx;
-plant.h0_x = h0_x;
-plant.Au =Au; plant.cx = cx;
+plant.P0 = P0; plant.h0_x = h0_x;
+plant.Du =Du; plant.cx = cx;
 
 cbf_config.deg_X = deg_X; cbf_config.deg_Y = deg_Y;
 cbf_config.X_state_index = X_states_index;
+cbf_config.Y_state_index = Y_states_index;
 cbf_config.deg_Lcbf = 2; 
 cbf_config.deg_Lu = 2;
 cbf_config.deg_Lx = 2;
 cbf_config.deg_L_X0 = 2;
+cbf_config.deg_L_P0 = 2;
 cbf_config.include_input_limits = include_input_limits;
 [h_init_fcn,h_init_fcn1,X_coef,Y_coef,X_fcn,Y_fcn] = cbf_sos(plant,cbf_config);
-return;
+
 %% 
 figure(1);clf;hold on;
-% old way (cumbersome)
+% old way for plotting (cumbersome)
 % step=.1;
 % x1= -2:step:2;
 % x2= -2:step/2:2;
@@ -100,7 +98,6 @@ figure(1);clf;hold on;
 % new way
 fimplicit(qx_fcn,'r-','Linewidth',1); fimplicit(h0_fcn,'r--','Linewidth',1); 
 plt_hinit = fimplicit(h_init_fcn1,'b--','Linewidth',1.5);
-
 if save_file 
     file_name = ['exp1_ulim_' num2str(include_input_limits) '_degX_' num2str(deg_X) '_degY_' num2str(deg_Y) '.mat'];    
     save(file_name,'plant','cbf_config','h_init_fcn','h_init_fcn1','X_fcn','Y_fcn','X_coef','Y_coef');
@@ -114,12 +111,11 @@ x = x_store;
 v = sdpvar(2,1);
 
 if size(X_coef,3)> 1
-    error('A constant X matrix has to be enforced so that h(x) is a polynominal function of x');    
+    error('X has to be a constant matrix so that h(x) is a polynominal function');    
 end
 % get initial hx;
 P0 = eye(n)/X_coef(:,:,1);
-K0 = Y_coef(:,:,1)*P0;
-u_fcn0 = @(x) K0*zx_fcn(x);
+u_fcn0 = @(x) Y_fcn(x)*(P0*zx_fcn(x));
 hx = 1-zx_store'*P0*zx_store; 
 
 max_iter = 50;
@@ -143,12 +139,12 @@ for k = 1:max_iter
     constrs = [constrs;sos(exp1) sos(Lcbf)];
     paras = [paras;epsilon;c_u; c_Lcbf];
 
-    % (2) control limits: |Au*u|<=1;
+    % (2) control limits: |Du*u|<=1;
     if include_input_limits 
         exp1 = {}; Lu ={}; c_Lu={}; v_Lu={};
-        for j = 1:size(Au,1)    
+        for j = 1:size(Du,1)    
             [Lu{j},c_Lu{j},v_Lu{j}] = polynomial([x;v],2);
-            exp1{j} = v'*[1  Au(j,:)*ux; (Au(j,:)*ux)' 1]*v - Lu{j}*hx;   
+            exp1{j} = v'*[1  Du(j,:)*ux; (Du(j,:)*ux)' 1]*v - Lu{j}*hx;   
             constrs = [constrs sos(exp1{j}) sos(Lu{j})];
             paras = [paras; c_Lu{j}];
         end
@@ -168,7 +164,7 @@ for k = 1:max_iter
         ux = c_u'*v_u;
         Lcbf = c_Lcbf'*v_Lcbf;
         if include_input_limits 
-            for j = 1:size(Au,1)  
+            for j = 1:size(Du,1)  
                 c_Lu{j} = value(c_Lu{j});
                 Lu{j} = c_Lu{j}'*v_Lu{j};
             end
@@ -193,12 +189,12 @@ for k = 1:max_iter
     exp1 = dh_dx*(fx+B*ux)+alpha*hx-Lcbf*hx;
     constrs = [Qh(1,1)>=1;Qh>=mu*eye(n_yx);sos(exp1)];
 
-    % (2) control limits: |Au*u|<=1;
+    % (2) control limits: |Du*u|<=1;
     if include_input_limits 
         exp1 = {};
-        for j = 1:size(Au,1)    
-%             exp2{j} = 1-norm(Au(j,:)*ux,2)^2 - Lu{j}*hx;   
-            exp1{j} = v'*[1  Au(j,:)*ux; (Au(j,:)*ux)' 1]*v - Lu{j}*hx;   
+        for j = 1:size(Du,1)    
+%             exp2{j} = 1-norm(Du(j,:)*ux,2)^2 - Lu{j}*hx;   
+            exp1{j} = v'*[1  Du(j,:)*ux; (Du(j,:)*ux)' 1]*v - Lu{j}*hx;   
             constrs = [constrs sos(exp1{j})];
         end
     end
