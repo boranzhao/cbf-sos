@@ -1,4 +1,4 @@
-%% synthesis of CBF using SOS and linear-like form
+%% Synthesis of CBFs using sum of squares optimization 
 clear;
 yalmip('clear')
 %% settings
@@ -13,14 +13,14 @@ Y_states_index = [1 2];     % the index of states which Y depends on
 %% dynamics and constraints
 % an unstable linear system from  
 % Clark, Verification and synthesis of control barrier functions, CDC, 2021
-A = [1 0; -1 4]; B=[1;0];
-% A = [0  1;-1 0]; B = [0 1];
+% A = [1 0; -1 4]; B=[1;0];
+x = sdpvar(2,1); x_store = x; % for later use
+A = [1 0; -1 0.5+x(2)]; B=[1;0];
 n = size(A,1); nu = size(B,2);
-x = sdpvar(n,1); 
-x_store = x; % for later use
+zx = x; zx_store = zx; zx_fcn = @(x) x;
 
 % written in a standard nonlinear input-affine form
-fx = A*x; 
+fx = A*zx; 
 dynamics = @(t,x,u) A*x+B*u;
 
 % given a fixed point, rewrite the dynamics using the deviation states in linear-like form:
@@ -33,10 +33,10 @@ ustar = zeros(nu,1);
 % x_store = x;
 M = eye(n); 
 
-% state constraints |cx*Zx}|<1; note that  = x for this example;
-% a set C:={x||cx*zx}|<1}; 
-cx = x';
-qx = x'*x-1; % an alternative way to express safety constraints: qx<=0
+% state constraints |Cx*zx}|<1; note that  = x for this example;
+% a set C:={x||Cx*zx}|<1}; 
+Cx = [x(1) x(2)];
+cx = x'*x-1; % an alternative way to express safety constraints: qx<=0
 qx_fcn = @(x,y) x^2+y^2-1;
 % input constraints |Du*u|<1;
 Du = 1;
@@ -49,18 +49,17 @@ P0 = eye(n);
 % plt_P0= fimplicit(@(x,y) 1-[x y]*(P0)*[x y]','b'); % check its shape;
 % P0 =[1.0836   -0.6789;
 %    -0.6789    6.5149];
-h0_x = 1-x'/P0*x;
+h0_x = 1-x'*x;
 h0_fcn = @(x1,x2) 1- [x1 x2]/P0*[x1 x2]';
 
 %% formulate the constraitns
-zx = x; zx_store = zx;
-zx_fcn = @(x) x;
 
-plant.n = n; plant.nu = nu;
+
+plant.n = n; plant.nu = nu; plant.N = length(zx);
 plant.A = A; plant.B = B; plant.M = M;
-plant.x = x; plant.zx = zx;
+plant.x = x; plant.zx = zx; plant.zx_fcn = zx_fcn;
 plant.P0 = P0; plant.h0_x = h0_x;
-plant.Du =Du; plant.cx = cx;
+plant.Du =Du; plant.Cx = Cx;
 
 cbf_config.deg_X = deg_X; cbf_config.deg_Y = deg_Y;
 cbf_config.X_state_index = X_states_index;
@@ -124,7 +123,8 @@ deg_ux_refine = 4; deg_yx_4_hx_refine = 2;
 min_eig_Qhs = nan*ones(1,max_iter);
 epsilons = nan*ones(1,max_iter);
 for k = 1:max_iter
-    %% With h(x) and alpha() fixed, search for u(x), Lcbf(x), and Lu_j(x)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % With h(x) and alpha() fixed, search for u(x), Lcbf(x), and Lu_j(x)
     ops = sdpsettings('solver','mosek','sos.numblkdg',1e-6,'verbose',0); %, ,'sos.numblkdg',1e-7 sometimes this will cause infinite loop
     x = x_store; 
 %     alpha = sdpvar; constrs =[alpha>=0 alpha<=1e2]; paras=[alpha];
@@ -173,7 +173,9 @@ for k = 1:max_iter
     epsilons(k) = value(epsilon);
     fprintf(1,'epsilon: %.3e\n',epsilons(k));
 
-    %% With  u(x), Lcbf(x), and Lu_j(x) fixed, search for h(x)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % With  u(x), Lcbf(x), and Lu_j(x) fixed, search for h(x)
+    
     alpha = value(alpha);
 %     clear yx
     constrs =[]; paras=[];
@@ -187,7 +189,7 @@ for k = 1:max_iter
     ops = sdpsettings('solver','mosek','sos.numblkdg',1e-6,'verbose',0); %, ,'sos.numblkdg',1e-9 sometimes this will cause infinite loop
     % (1) cbf condition
     exp1 = dh_dx*(fx+B*ux)+alpha*hx-Lcbf*hx;
-    constrs = [Qh(1,1)>=1;Qh>=mu*eye(n_yx);sos(exp1)];
+    constrs = [Qh(1,1)==1;Qh>=mu*eye(n_yx);sos(exp1)];
 
     % (2) control limits: |Du*u|<=1;
     if include_input_limits 
@@ -200,11 +202,11 @@ for k = 1:max_iter
     end
 
 %     (3) state constraints: ensuring that Ch={x|h(x)<=0} is a subset of
-%     C{x|qx<0}, where qx = |cx*zx|-1; in other words, the complement of C
+%     C{x|qx<0}, where qx = |Cx*zx|-1; in other words, the complement of C
 %     is a subset of Ch. 
-    for i =1:size(qx,1) 
+    for i =1:size(cx,1) 
         [Lx{i},c_Lx,v_Lx] = polynomial(x,4);
-        exp2{i} = -hx-Lx{i}*qx(i);  % whenever qx(i)>0 (unsafe), we want h(x)<0 (outside CBF certified region)
+        exp2{i} = -hx-Lx{i}*cx(i);  % whenever qx(i)>0 (unsafe), we want h(x)<0 (outside CBF certified region)
         constrs = [constrs sos(exp2{i}) sos(Lx{i})];
         paras = [paras; c_Lx];
     end
